@@ -1,15 +1,17 @@
 import random
+from bs4 import BeautifulSoup
 from flask import Flask, render_template, request
 from datetime import datetime
 import os
 import json
 import firebase_admin
 from firebase_admin import credentials, firestore
+import requests
 
 # 判斷是在 Vercel 還是本地
-if os.path.exists('firestore/serviceAccountKey.json'):
+if os.path.exists('serviceAccountKey.json'):
     # 本地環境：讀取檔案
-    cred = credentials.Certificate('firestore/serviceAccountKey.json')
+    cred = credentials.Certificate('serviceAccountKey.json')
 else:
     # 雲端環境：從環境變數讀取 JSON 字串
     firebase_config = os.getenv('FIREBASE_CONFIG')
@@ -28,9 +30,145 @@ def index():
     link += "<a href = /welcome?u=雨安&d=靜宜資管&c=資訊管理導論>Get傳值</a><hr>"
     link += "<a href = /account>POST傳值(帳號密碼)</a><hr>"
     link += "<a href = /math>次方與根號運算</a><hr>"
-    link += "<a href=/cup>線上擲筊</a><hr>"
-    link += "<a href=/read3>讀取Firestore資料</a><hr>"
+    link += "<a href = /cup>線上擲筊</a><hr>"
+    link += "<a href = /read3>讀取Firestore資料</a><hr>"
+    link += "<a href = /search>搜尋老師</a><hr>"
+    link += "<a href = /spider1>爬蟲課程</a><hr>"
+    link += "<a href='/movie'>查詢即將上映電影</a><hr>"
     return link
+
+@app.route("/movie", methods=["GET", "POST"])
+def movie():
+    db = firestore.client()
+
+    # :point_right: 第一次進來（GET）→ 自動爬蟲
+    if request.method == "GET":
+        url = "http://www.atmovies.com.tw/movie/next/"
+        Data = requests.get(url)
+        Data.encoding = "utf-8"
+
+        sp = BeautifulSoup(Data.text, "html.parser")
+        result = sp.select(".filmListAllX li")
+
+        for item in result:
+            try:
+                picture = item.find("img").get("src").strip()
+
+                # :star: 關鍵修正：補完整網址
+                if picture.startswith("/"):
+                    picture = "http://www.atmovies.com.tw" + picture
+
+                title = item.find("div", class_="filmtitle").text.strip()
+
+                link = item.find("a").get("href")
+                movie_id = link.replace("/", "").replace("movie", "")
+
+                hyperlink = "http://www.atmovies.com.tw" + link
+
+                show = item.find("div", class_="runtime").text
+                show = show.replace("上映日期：", "").replace("片長：", "").replace("分", "")
+
+                showDate = show[0:10]
+                showLength = show[13:]
+
+                doc = {
+                    "title": title,
+                    "picture": picture,
+                    "hyperlink": hyperlink,
+                    "showDate": showDate,
+                    "showLength": showLength
+                }
+
+                db.collection("電影").document(movie_id).set(doc)
+
+            except Exception as e:
+                print("錯誤:", e)
+
+        return render_template("movie.html", movies=None)
+
+    # :point_right: 查詢（POST）
+    else:
+        keyword = request.form["MovieTitle"]
+
+        docs = db.collection("電影").get()
+
+        movies = []
+        for doc in docs:
+            data = doc.to_dict()
+
+            if keyword in data.get("title", ""):
+                movies.append(data)
+
+        return render_template("movie.html", movies=movies)
+
+@app.route("/spider1")
+def spider1():
+    from bs4 import BeautifulSoup
+    import requests
+
+    url = "https://www1.pu.edu.tw/~tcyang/course.html"
+
+    headers = {
+        "User-Agent": "Mozilla/5.0"
+    }
+
+    try:
+        Data = requests.get(url, headers=headers, timeout=10, verify=False)
+        Data.encoding = "utf-8"
+    except Exception as e:
+        return f"錯誤: {e}"
+
+    sp = BeautifulSoup(Data.text, "html.parser")
+
+    courses = sp.select(".team-box")
+
+    html = "<h2>課程列表</h2>"
+
+    for c in courses:
+        a_tag = c.find("a")
+        title = c.find("h4")  # 課程名稱
+
+        if a_tag:
+            link = a_tag.get("href")
+
+            # 補完整網址
+            if link and not link.startswith("http"):
+                link = "https://www1.pu.edu.tw/" + link
+
+        else:
+            link = ""
+
+        name = title.text.strip() if title else "無名稱"
+
+        # 👉 這裡就是你要的格式
+        html += f"{link}<br>"
+        html += f"{name}{link}<br>"
+        html += f"{link}<br><br>"
+
+    html += "<a href='/'>回首頁</a>"
+
+    return html
+
+@app.route("/search", methods=["GET", "POST"])
+def search():
+    db = firestore.client()
+    results = []
+    keyword = ""
+    
+    if request.method == "POST":
+        keyword = request.form.get("keyword")
+        collection_ref = db.collection("靜宜資管")
+        docs = collection_ref.get()
+
+        for doc in docs:
+            user = doc.to_dict()
+            if keyword in user["name"]:
+                results.append({
+                    "name": user["name"],
+                    "lab": user["lab"]
+                })
+
+    return render_template("search.html", results=results, keyword=keyword)
 
 @app.route("/read3")
 def read3():
